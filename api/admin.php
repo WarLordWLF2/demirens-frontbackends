@@ -1469,6 +1469,60 @@ class Admin_Functions
                 return;
             }
 
+            // Block checkout when there is an outstanding balance or incomplete invoice
+            $synCheckOut = ['checked-out','checked out','check-out','check out'];
+            if (in_array($nm, $synCheckOut)) {
+                // Compute remaining balance using latest billing/invoice if available; otherwise fallback to booking totals
+                $balQuery = "
+                    SELECT 
+                        CASE 
+                            WHEN lb.billing_id IS NOT NULL THEN 
+                                CASE 
+                                    WHEN li.invoice_status_id = 1 THEN 0 
+                                    ELSE COALESCE(lb.billing_balance, 0) 
+                                END
+                            ELSE 
+                                COALESCE(b.booking_totalAmount, 0) - COALESCE(b.booking_payment, 0)
+                        END AS balance,
+                        COALESCE(li.invoice_status_id, NULL) AS invoice_status_id
+                    FROM tbl_booking b
+                    LEFT JOIN (
+                        SELECT billing_id, booking_id, billing_balance 
+                        FROM tbl_billing 
+                        WHERE booking_id = :bid 
+                        ORDER BY billing_id DESC 
+                        LIMIT 1
+                    ) lb ON lb.booking_id = b.booking_id
+                    LEFT JOIN (
+                        SELECT i.invoice_id, b.booking_id, i.invoice_status_id 
+                        FROM tbl_invoice i 
+                        LEFT JOIN tbl_billing b ON i.billing_id = b.billing_id 
+                        WHERE b.booking_id = :bid 
+                        ORDER BY i.invoice_id DESC 
+                        LIMIT 1
+                    ) li ON li.booking_id = b.booking_id
+                    WHERE b.booking_id = :bid
+                ";
+                $stmtBal = $conn->prepare($balQuery);
+                $stmtBal->bindParam(':bid', $booking_id, PDO::PARAM_INT);
+                $stmtBal->execute();
+                $balRow = $stmtBal->fetch(PDO::FETCH_ASSOC);
+                $remaining = floatval($balRow['balance'] ?? 0);
+                $invoiceStatusId = isset($balRow['invoice_status_id']) ? intval($balRow['invoice_status_id']) : null;
+
+                // Consider small rounding; block if > 0.009 or invoice not complete when present
+                if ($remaining > 0.009) {
+                    if (ob_get_length()) { ob_clean(); }
+                    echo json_encode(['success' => false, 'message' => 'Cannot check out: outstanding balance of ' . number_format($remaining, 2)]);
+                    return;
+                }
+                if ($invoiceStatusId !== null && $invoiceStatusId !== 1) {
+                    if (ob_get_length()) { ob_clean(); }
+                    echo json_encode(['success' => false, 'message' => 'Cannot check out: latest invoice is not completed']);
+                    return;
+                }
+            }
+
             // Determine room ids
             $room_ids = [];
             if (is_array($provided_room_ids) && count($provided_room_ids) > 0) {
@@ -2370,6 +2424,13 @@ class Admin_Functions
             $amenity_names = isset($data['amenity_names']) && is_array($data['amenity_names']) ? array_filter(array_map('strval', $data['amenity_names'])) : [];
             $booking_id = intval($data['booking_id'] ?? 0);
             $booking_room_id = intval($data['booking_room_id'] ?? 0);
+            
+            // Guard: require booking scope to prevent unintended global increments
+            if ($booking_id <= 0 && $booking_room_id <= 0) {
+                if (ob_get_length()) { ob_clean(); }
+                echo json_encode(['success' => false, 'message' => 'Missing booking_id or booking_room_id. Select a booking before applying +1 Day.']);
+                return;
+            }
 
             // Resolve amenity IDs by names if needed
             if (count($amenity_ids) === 0 && count($amenity_names) > 0) {
@@ -2390,6 +2451,36 @@ class Admin_Functions
                     $tvId = $tvStmt->fetchColumn();
                     if ($tvId) { $amenity_ids[] = intval($tvId); }
                 } catch (Exception $_) { /* ignore */ }
+            }
+
+            // Resolve booking_id if only booking_room_id is provided
+            if ($booking_id <= 0 && $booking_room_id > 0) {
+                $brStmt = $conn->prepare("SELECT booking_id FROM tbl_booking_room WHERE booking_room_id = :brid LIMIT 1");
+                $brStmt->bindParam(':brid', $booking_room_id, PDO::PARAM_INT);
+                $brStmt->execute();
+                $brRow = $brStmt->fetch(PDO::FETCH_ASSOC);
+                if ($brRow && isset($brRow['booking_id'])) {
+                    $booking_id = intval($brRow['booking_id']);
+                }
+            }
+
+            // Block increments for bookings already checked-out
+            if ($booking_id > 0) {
+                $statusStmt = $conn->prepare("SELECT bs.booking_status_name 
+                    FROM tbl_booking_history bh 
+                    JOIN tbl_booking_status bs ON bs.booking_status_id = bh.status_id 
+                    WHERE bh.booking_id = :bid 
+                    ORDER BY bh.updated_at DESC, bh.booking_history_id DESC 
+                    LIMIT 1");
+                $statusStmt->bindParam(':bid', $booking_id, PDO::PARAM_INT);
+                $statusStmt->execute();
+                $statusRow = $statusStmt->fetch(PDO::FETCH_ASSOC);
+                $latestName = $statusRow ? strtolower(trim($statusRow['booking_status_name'])) : '';
+                if (in_array($latestName, ['checked-out','checked out'])) {
+                    if (ob_get_length()) { ob_clean(); }
+                    echo json_encode(['success' => false, 'message' => 'Cannot apply +1 Day: booking is already Checked-Out.']);
+                    return;
+                }
             }
 
             // Build WHERE scope for delivered charges

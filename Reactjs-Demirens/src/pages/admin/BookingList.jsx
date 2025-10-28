@@ -726,9 +726,50 @@ const [openActionsForBookingId, setOpenActionsForBookingId] = useState(null);
 
   // Payment validation function
   const checkRemainingBalance = (booking) => {
-    // ONLY use balance from database - no calculations
-    const balance = parseFloat(booking.balance);
-    return balance || 0;
+    // If we're checking the currently selected booking and have up-to-date billing data,
+    // compute remaining using the UI's source of truth (finalTotalAmount - sum of bill payments).
+    if (selectedBooking && booking?.booking_id === selectedBooking.booking_id) {
+      if (Array.isArray(billingData) && billingData.length > 0) {
+        const totalPaidAmount = billingData.reduce((sum, bill) => sum + (parseFloat(bill?.billing_downpayment) || 0), 0);
+        const totalAll = Number.isFinite(finalTotalAmount) ? finalTotalAmount : (calculateBookingBalance(booking) || 0);
+        const remainingFromBills = Math.max(totalAll - totalPaidAmount, 0);
+        return remainingFromBills;
+      }
+
+      // If an invoice exists and is incomplete, block checkout by reporting a positive remaining
+      if (invoiceData && booking?.reference_no === selectedBooking.reference_no) {
+        const invoiceTotal = parseFloat(invoiceData?.invoice_total_amount);
+        const hasInvoiceTotal = Number.isFinite(invoiceTotal) && invoiceTotal >= 0;
+        const isComplete = invoiceData?.invoice_status_id === 1;
+        if (!isComplete) {
+          // Without reliable paid breakdown here, conservatively block
+          return Number.POSITIVE_INFINITY;
+        }
+        // Complete invoice implies no remaining balance
+        if (isComplete && hasInvoiceTotal) {
+          return 0;
+        }
+      }
+    }
+
+    // Prefer DB-provided balance; guard against undefined/NaN
+    const dbBalance = parseFloat(booking?.balance);
+    if (Number.isFinite(dbBalance) && dbBalance >= 0) {
+      return dbBalance;
+    }
+
+    // Fallback: compute using known totals (rooms + approved amenities) and payments (downpayment field)
+    try {
+      const computed = calculateBookingBalance(booking);
+      if (Number.isFinite(computed) && computed >= 0) {
+        return computed;
+      }
+    } catch (e) {
+      // ignore and use conservative default below
+    }
+
+    // Conservative default: treat as unpaid to prevent accidental checkout
+    return Number.POSITIVE_INFINITY;
   };
 
   const isValidForCheckOut = (booking) => {

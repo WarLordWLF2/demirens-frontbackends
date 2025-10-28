@@ -474,8 +474,11 @@ function AdminRequestedAmenities() {
               <Plus className="h-4 w-4 mr-2" />
               Add Amenity Request
             </Button>
-            <Button
-              onClick={() => setPlusOneDialogOpen(true)}
+            <Button 
+              onClick={() => {
+                // Global mode: allow +1 Day for all Checked-In customers
+                setPlusOneDialogOpen(true);
+              }}
               className="ml-2 bg-[#113f67] hover:bg-[#0d2a4a] dark:bg-blue-700 dark:hover:bg-blue-600 text-white shadow-lg hover:shadow-xl transition-all duration-200"
             >
               +1 Day
@@ -1044,27 +1047,48 @@ function AdminRequestedAmenities() {
                   disabled={plusOneCountdown > 0}
                   onClick={async () => {
                     try {
-                      const formData = new FormData();
-                      formData.append('method', 'increment_amenity_day');
-                      const payload = { amenity_names: ['Bed', 'Extra Guest', 'Towels', 'Ttowels'] };
-                      if (selectedGroup?.booking_id) {
-                        payload.booking_id = selectedGroup.booking_id;
-                      } else if (selectedRequest?.booking_id) {
-                        payload.booking_id = selectedRequest.booking_id;
-                      }
-                      formData.append('json', JSON.stringify(payload));
+                      // 1) Load all bookings
+                      const fd = new FormData();
+                      fd.append('method', 'viewBookingsEnhanced');
+                      const res = await axios.post(APIConn, fd);
+                      const bookings = Array.isArray(res.data) ? res.data : [];
 
-                      const resp = await axios.post(APIConn, formData);
-                      const ok = resp?.data?.success === true;
-                      const updated = resp?.data?.updated ?? 0;
-                      toast.success('+1day');
-                      if (ok) {
-                        fetchAmenityRequests();
-                        fetchStats();
+                      // 2) Filter to Checked-In bookings only
+                      const checkedInIds = bookings
+                        .filter(b => String(b.booking_status || '').toLowerCase() === 'checked-in')
+                        .map(b => b.booking_id)
+                        .filter(Boolean);
+
+                      if (!checkedInIds.length) {
+                        toast.info('No customers are currently Checked-In.');
+                        return;
                       }
+
+                      // 3) Apply +1 Day to each Checked-In booking sequentially
+                      const amenityNames = ['Bed', 'Extra Guest', 'Towels', 'Ttowels'];
+                      let successCount = 0;
+                      let failCount = 0;
+
+                      for (const bid of checkedInIds) {
+                        const formData = new FormData();
+                        formData.append('method', 'increment_amenity_day');
+                        formData.append('json', JSON.stringify({ amenity_names: amenityNames, booking_id: bid }));
+                        try {
+                          const resp = await axios.post(APIConn, formData);
+                          if (resp?.data?.success) successCount++; else failCount++;
+                        } catch (err) {
+                          console.error('Failed to apply +1 Day for booking', bid, err);
+                          failCount++;
+                        }
+                      }
+
+                      // 4) Feedback and refresh
+                      toast.success(`+1 Day processed for ${checkedInIds.length} Checked-In booking(s). Success: ${successCount}, Failed: ${failCount}.`);
+                      fetchAmenityRequests();
+                      fetchStats();
                     } catch (e) {
-                      console.error('increment_amenity_day error', e);
-                      toast.success('+1day');
+                      console.error('Batch increment_amenity_day error', e);
+                      toast.error('Failed to apply +1 Day to Checked-In customers');
                     } finally {
                       setPlusOneDialogOpen(false);
                     }
