@@ -2360,6 +2360,75 @@ class Admin_Functions
         }
     }
 
+    // 8) Increment delivered amenity day(s) for multiple amenity types
+    // Accepts: json { amenity_ids?: [int], amenity_names?: [string], booking_id?: int, booking_room_id?: int }
+    function increment_amenity_day($json) {
+        include "connection.php";
+        try {
+            $data = is_string($json) ? json_decode($json, true) : (is_array($json) ? $json : []);
+            $amenity_ids = isset($data['amenity_ids']) && is_array($data['amenity_ids']) ? array_filter(array_map('intval', $data['amenity_ids'])) : [];
+            $amenity_names = isset($data['amenity_names']) && is_array($data['amenity_names']) ? array_filter(array_map('strval', $data['amenity_names'])) : [];
+            $booking_id = intval($data['booking_id'] ?? 0);
+            $booking_room_id = intval($data['booking_room_id'] ?? 0);
+
+            // Resolve amenity IDs by names if needed
+            if (count($amenity_ids) === 0 && count($amenity_names) > 0) {
+                $placeholders = implode(',', array_fill(0, count($amenity_names), '?'));
+                $stmt = $conn->prepare("SELECT charges_master_id FROM tbl_charges_master WHERE charges_master_name IN ($placeholders)");
+                foreach ($amenity_names as $i => $n) { $stmt->bindValue($i+1, $n, PDO::PARAM_STR); }
+                $stmt->execute();
+                $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+                foreach ($rows as $r) { $amenity_ids[] = intval($r['charges_master_id']); }
+            }
+
+            // Sensible defaults if still empty: Bed (2), Extra Guest (12), plus Television if present
+            if (count($amenity_ids) === 0) {
+                $amenity_ids = [2, 12];
+                try {
+                    $tvStmt = $conn->prepare("SELECT charges_master_id FROM tbl_charges_master WHERE charges_master_name LIKE 'Television%' LIMIT 1");
+                    $tvStmt->execute();
+                    $tvId = $tvStmt->fetchColumn();
+                    if ($tvId) { $amenity_ids[] = intval($tvId); }
+                } catch (Exception $_) { /* ignore */ }
+            }
+
+            // Build WHERE scope for delivered charges
+            $where = "bc.booking_charge_status = 2";
+            $params = [];
+            if (count($amenity_ids) > 0) {
+                $in = implode(',', array_fill(0, count($amenity_ids), '?'));
+                $where .= " AND bc.charges_master_id IN ($in)";
+                foreach ($amenity_ids as $id) { $params[] = $id; }
+            }
+            if ($booking_room_id > 0) {
+                $where .= " AND bc.booking_room_id = ?";
+                $params[] = $booking_room_id;
+            } elseif ($booking_id > 0) {
+                $where .= " AND br.booking_id = ?";
+                $params[] = $booking_id;
+            }
+
+            // Atomic increment using master price
+            $sql = "UPDATE tbl_booking_charges bc
+                    JOIN tbl_charges_master cm ON cm.charges_master_id = bc.charges_master_id
+                    JOIN tbl_booking_room br ON br.booking_room_id = bc.booking_room_id
+                    SET bc.booking_charges_quantity = bc.booking_charges_quantity + 1,
+                        bc.booking_charges_total = bc.booking_charges_total + cm.charges_master_price,
+                        bc.booking_return_datetime = NOW()
+                    WHERE $where";
+            $stmt = $conn->prepare($sql);
+            foreach ($params as $i => $p) { $stmt->bindValue($i+1, $p, PDO::PARAM_INT); }
+            $stmt->execute();
+            $affected = $stmt->rowCount();
+
+            if (ob_get_length()) { ob_clean(); }
+            echo json_encode(['success' => true, 'affected' => $affected]);
+        } catch (Exception $e) {
+            if (ob_get_length()) { ob_clean(); }
+            echo json_encode(['success' => false, 'message' => $e->getMessage()]);
+        }
+    }
+
     // List online booking requests grouped with requested rooms
     function reqBookingList() {
         include "connection.php";
@@ -2765,6 +2834,9 @@ switch ($method) {
         break;
     case 'get_pending_amenity_count':
         $admin->get_pending_amenity_count();
+        break;
+    case 'increment_amenity_day':
+        $admin->increment_amenity_day($json);
         break;
 
     default:

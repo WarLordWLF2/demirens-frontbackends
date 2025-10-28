@@ -55,6 +55,10 @@ function AdminRequestedAmenities() {
   const [selectedBookingRoomsFromNavigation, setSelectedBookingRoomsFromNavigation] = useState([]);
   const [selectedAmenitiesFromNavigation, setSelectedAmenitiesFromNavigation] = useState([]);
 
+  // +1 Day confirmation modal state
+  const [plusOneDialogOpen, setPlusOneDialogOpen] = useState(false);
+  const [plusOneCountdown, setPlusOneCountdown] = useState(3);
+
   const location = useLocation();
   const APIConn = `${localStorage.url}admin.php`;
 
@@ -331,6 +335,22 @@ function AdminRequestedAmenities() {
     filterRequests();
   }, [filterRequests]);
 
+  // Handle countdown for +1 Day confirmation
+  useEffect(() => {
+    if (!plusOneDialogOpen) return;
+    setPlusOneCountdown(3);
+    const interval = setInterval(() => {
+      setPlusOneCountdown((c) => {
+        if (c <= 1) {
+          clearInterval(interval);
+          return 0;
+        }
+        return c - 1;
+      });
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [plusOneDialogOpen]);
+
   // Group filtered requests by booking reference number (merged), track earliest and latest times
   const groupedRequests = useMemo(() => {
     if (!groupView) return [];
@@ -453,6 +473,12 @@ function AdminRequestedAmenities() {
             >
               <Plus className="h-4 w-4 mr-2" />
               Add Amenity Request
+            </Button>
+            <Button
+              onClick={() => setPlusOneDialogOpen(true)}
+              className="ml-2 bg-[#113f67] hover:bg-[#0d2a4a] dark:bg-blue-700 dark:hover:bg-blue-600 text-white shadow-lg hover:shadow-xl transition-all duration-200"
+            >
+              +1 Day
             </Button>
           </div>
         </div>
@@ -888,13 +914,6 @@ function AdminRequestedAmenities() {
                 {/* Modal header */}
                 <div className="sticky top-0 z-10 flex items-center justify-between px-4 py-3 border-b bg-white text-gray-900 border-gray-200 dark:bg-gray-900 dark:text-white dark:border-gray-700">
                   <h2 className="text-lg font-semibold text-gray-900 dark:text-white">Request Group Details</h2>
-                  <Button 
-                    variant="outline" 
-                    onClick={() => setGroupDialogOpen(false)}
-                    className="border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800"
-                  >
-                    Close
-                  </Button>
                 </div>
 
                 {/* Modal content */}
@@ -1004,6 +1023,60 @@ function AdminRequestedAmenities() {
             </div>
           </div>
         )}
+
+        {/* +1 Day Confirmation Modal */}
+        <Dialog open={plusOneDialogOpen} onOpenChange={setPlusOneDialogOpen}>
+          <DialogContent className="w-[95vw] max-w-md bg-white text-gray-900 dark:bg-gray-900 dark:text-white">
+            <DialogHeader>
+              <DialogTitle>Increase by +1 Day</DialogTitle>
+            </DialogHeader>
+            <div className="space-y-4">
+              <p className="text-sm">Are you sure you want to increase by 1 day?</p>
+              <div className="flex justify-end gap-3">
+                <Button
+                  variant="outline"
+                  onClick={() => setPlusOneDialogOpen(false)}
+                  className="border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800"
+                >
+                  Cancel
+                </Button>
+                <Button
+                  disabled={plusOneCountdown > 0}
+                  onClick={async () => {
+                    try {
+                      const formData = new FormData();
+                      formData.append('method', 'increment_amenity_day');
+                      const payload = { amenity_names: ['Bed', 'Extra Guest', 'Towels', 'Ttowels'] };
+                      if (selectedGroup?.booking_id) {
+                        payload.booking_id = selectedGroup.booking_id;
+                      } else if (selectedRequest?.booking_id) {
+                        payload.booking_id = selectedRequest.booking_id;
+                      }
+                      formData.append('json', JSON.stringify(payload));
+
+                      const resp = await axios.post(APIConn, formData);
+                      const ok = resp?.data?.success === true;
+                      const updated = resp?.data?.updated ?? 0;
+                      toast.success('+1day');
+                      if (ok) {
+                        fetchAmenityRequests();
+                        fetchStats();
+                      }
+                    } catch (e) {
+                      console.error('increment_amenity_day error', e);
+                      toast.success('+1day');
+                    } finally {
+                      setPlusOneDialogOpen(false);
+                    }
+                  }}
+                  className="bg-green-600 hover:bg-green-700 dark:bg-green-700 dark:hover:bg-green-600 text-white"
+                >
+                  {plusOneCountdown > 0 ? `Confirm in ${plusOneCountdown}s` : 'Confirm'}
+                </Button>
+              </div>
+            </div>
+          </DialogContent>
+        </Dialog>
 
 
         {/* Add Amenity Request Modal */}
