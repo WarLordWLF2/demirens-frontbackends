@@ -19,6 +19,8 @@ import {
   Search,
   Eye,
   CheckCircle2,
+  RotateCcw,
+  Undo,
   Plus
 } from 'lucide-react';
 import axios from 'axios';
@@ -34,7 +36,7 @@ function AdminRequestedAmenities() {
   const [stats, setStats] = useState({});
   const [selectedRequest, setSelectedRequest] = useState(null);
   const [actionDialogOpen, setActionDialogOpen] = useState(false);
-  const [actionType, setActionType] = useState(''); // 'approve' or 'reject'
+  const [actionType, setActionType] = useState(''); // 'approve' | 'reject' | 'cancel' | 'pending' | 'return'
   const [adminNotes, setAdminNotes] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
@@ -224,8 +226,17 @@ function AdminRequestedAmenities() {
     if (!selectedRequest) return;
 
     try {
+      const methodMap = {
+        approve: 'approve_amenity_request',
+        reject: 'reject_amenity_request',
+        cancel: 'reject_amenity_request',
+        pending: 'set_pending_amenity_request',
+        return: 'return_amenity_request'
+      };
+      const apiMethod = methodMap[actionType] || 'reject_amenity_request';
+
       const formData = new FormData();
-      formData.append('method', actionType === 'approve' ? 'approve_amenity_request' : 'reject_amenity_request');
+      formData.append('method', apiMethod);
       formData.append('json', JSON.stringify({
         request_id: selectedRequest.request_id,
         employee_id: 1, // Default admin ID
@@ -234,19 +245,22 @@ function AdminRequestedAmenities() {
 
       const response = await axios.post(APIConn, formData);
       
-      if (Number(response.data) === 1) {
-        toast.success(`Amenity request ${actionType}d successfully!`);
+      if (Number(response.data) === 1 || response.data?.success === true) {
+        const verb = actionType === 'pending' ? 'set to pending' : (actionType === 'return' ? 'marked as returned' : `${actionType}d`);
+        toast.success(`Amenity request ${verb} successfully!`);
         fetchAmenityRequests();
         fetchStats();
         setActionDialogOpen(false);
         // Trigger notification refresh
         setNotificationRefreshTrigger(prev => prev + 1);
       } else {
-        toast.error(`Failed to ${actionType} amenity request`);
+        const verb = actionType === 'pending' ? 'set to pending' : (actionType === 'return' ? 'mark as returned' : actionType);
+        toast.error(`Failed to ${verb} amenity request`);
       }
     } catch (error) {
-      console.error(`Error ${actionType}ing amenity request:`, error);
-      toast.error(`Failed to ${actionType} amenity request`);
+      const verb = actionType === 'pending' ? 'setting to pending' : (actionType === 'return' ? 'marking as returned' : `${actionType}ing`);
+      console.error(`Error ${verb} amenity request:`, error);
+      toast.error(`Failed ${verb} amenity request`);
     }
   };
 
@@ -260,6 +274,7 @@ function AdminRequestedAmenities() {
       pending: { color: 'bg-yellow-100 text-yellow-800', icon: Clock },
       approved: { color: 'bg-green-100 text-green-800', icon: CheckCircle },
       rejected: { color: 'bg-red-100 text-red-800', icon: XCircle },
+      return: { color: 'bg-blue-100 text-blue-800', icon: RotateCcw },
       mixed: { color: 'bg-gray-100 text-gray-800', icon: Package }
     };
 
@@ -770,11 +785,43 @@ function AdminRequestedAmenities() {
                                       <Button
                                         size="sm"
                                         variant="destructive"
-                                        onClick={() => handleAction(request, 'reject')}
+                                        onClick={() => handleAction(request, 'cancel')}
                                         className="bg-red-600 hover:bg-red-700 dark:bg-red-700 dark:hover:bg-red-600"
                                       >
                                         <XCircle className="h-4 w-4" />
                                       </Button>
+                                      {String(request.charges_master_name || '').toLowerCase().includes('bed') && (
+                                        <Button
+                                          size="sm"
+                                          variant="outline"
+                                          onClick={() => handleAction(request, 'return')}
+                                          className="border-blue-300 text-blue-700 hover:bg-blue-50"
+                                        >
+                                          <Undo className="h-4 w-4" />
+                                        </Button>
+                                      )}
+                                    </>
+                                  )}
+                                  {request.request_status !== 'pending' && (
+                                    <>
+                                      <Button
+                                        size="sm"
+                                        variant="outline"
+                                        onClick={() => handleAction(request, 'pending')}
+                                        className="border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800"
+                                      >
+                                        Set Pending
+                                      </Button>
+                                      {String(request.charges_master_name || '').toLowerCase().includes('bed') && (
+                                        <Button
+                                          size="sm"
+                                          variant="outline"
+                                          onClick={() => handleAction(request, 'return')}
+                                          className="border-blue-300 text-blue-700 hover:bg-blue-50"
+                                        >
+                                          Return
+                                        </Button>
+                                      )}
                                     </>
                                   )}
                                   <Button
@@ -862,10 +909,10 @@ function AdminRequestedAmenities() {
                 )}
 
                 {/* Action Form */}
-                {actionType && selectedRequest.request_status === 'pending' && (
+                {actionType && (
                   <div>
                     <Label htmlFor="adminNotes" className="text-sm font-medium text-gray-600">
-                      Admin Notes {actionType === 'approve' ? '(Optional)' : '(Required)'}
+                      Admin Notes {actionType === 'approve' ? '(Optional)' : '(Optional)'}
                     </Label>
                     <Textarea
                       id="adminNotes"
@@ -886,14 +933,20 @@ function AdminRequestedAmenities() {
                   >
                     Cancel
                   </Button>
-                  {actionType && selectedRequest.request_status === 'pending' && (
+                  {actionType && (
                     <Button
                       onClick={confirmAction}
-                      className={actionType === 'approve' 
-                        ? 'bg-green-600 hover:bg-green-700 dark:bg-green-700 dark:hover:bg-green-600 text-white' 
-                        : 'bg-red-600 hover:bg-red-700 dark:bg-red-700 dark:hover:bg-red-600 text-white'}
+                      className={
+                        actionType === 'approve' ?
+                          'bg-green-600 hover:bg-green-700 dark:bg-green-700 dark:hover:bg-green-600 text-white' :
+                        actionType === 'cancel' ?
+                          'bg-red-600 hover:bg-red-700 dark:bg-red-700 dark:hover:bg-red-600 text-white' :
+                        actionType === 'pending' ?
+                          'bg-gray-600 hover:bg-gray-700 dark:bg-gray-700 dark:hover:bg-gray-600 text-white' :
+                        'bg-blue-600 hover:bg-blue-700 dark:bg-blue-700 dark:hover:bg-blue-600 text-white'
+                      }
                     >
-                      {actionType === 'approve' ? 'Approve' : 'Reject'}
+                      {actionType === 'approve' ? 'Approve' : actionType === 'cancel' ? 'Cancel' : actionType === 'pending' ? 'Set Pending' : 'Return'}
                     </Button>
                   )}
                 </div>

@@ -2278,9 +2278,9 @@ class Admin_Functions
                         bc.booking_charges_quantity AS request_quantity,
                         bc.booking_charges_price AS request_price,
                         bc.booking_charges_total AS request_total,
-                        CASE bc.booking_charge_status WHEN 1 THEN 'pending' WHEN 2 THEN 'approved' WHEN 3 THEN 'rejected' ELSE 'pending' END AS request_status,
+                        CASE bc.booking_charge_status WHEN 1 THEN 'pending' WHEN 2 THEN 'approved' WHEN 3 THEN 'rejected' WHEN 4 THEN 'return' ELSE 'pending' END AS request_status,
                         bc.booking_charge_datetime AS requested_at,
-                        CASE WHEN bc.booking_charge_status IN (2,3) THEN bc.booking_return_datetime ELSE NULL END AS processed_at,
+                        CASE WHEN bc.booking_charge_status IN (2,3,4) THEN bc.booking_return_datetime ELSE NULL END AS processed_at,
                         bn.booking_c_notes AS admin_notes,
                         NULL AS customer_notes
                     FROM tbl_booking_charges bc
@@ -2387,6 +2387,72 @@ class Admin_Functions
             }
 
             $stmt = $conn->prepare("UPDATE tbl_booking_charges SET booking_charge_status=3, booking_return_datetime=NOW()" . ($note_id ? ", booking_charges_notes_id=:nid" : "") . " WHERE booking_charges_id=:id");
+            $params = [':id' => $request_id];
+            if ($note_id) { $params[':nid'] = $note_id; }
+            $stmt->execute($params);
+
+            $conn->commit();
+            if (ob_get_length()) { ob_clean(); }
+            echo 1;
+        } catch (Exception $e) {
+            if ($conn && $conn->inTransaction()) { $conn->rollBack(); }
+            if (ob_get_length()) { ob_clean(); }
+            echo 0;
+        }
+    }
+
+    // 6.1) Set amenity request back to pending
+    function set_pending_amenity_request($json) {
+        include "connection.php";
+        try {
+            $data = is_string($json) ? json_decode($json, true) : $json;
+            $request_id = intval($data['request_id'] ?? 0);
+            $admin_notes = trim($data['admin_notes'] ?? '');
+            if ($request_id <= 0) { if (ob_get_length()) { ob_clean(); } echo 0; return; }
+
+            $conn->beginTransaction();
+
+            $note_id = null;
+            if ($admin_notes !== '') {
+                $stmtN = $conn->prepare("INSERT INTO tbl_booking_charges_notes (booking_c_notes) VALUES (:notes)");
+                $stmtN->execute([':notes' => $admin_notes]);
+                $note_id = $conn->lastInsertId();
+            }
+
+            $stmt = $conn->prepare("UPDATE tbl_booking_charges SET booking_charge_status=1, booking_return_datetime=NULL" . ($note_id ? ", booking_charges_notes_id=:nid" : "") . " WHERE booking_charges_id=:id");
+            $params = [':id' => $request_id];
+            if ($note_id) { $params[':nid'] = $note_id; }
+            $stmt->execute($params);
+
+            $conn->commit();
+            if (ob_get_length()) { ob_clean(); }
+            echo 1;
+        } catch (Exception $e) {
+            if ($conn && $conn->inTransaction()) { $conn->rollBack(); }
+            if (ob_get_length()) { ob_clean(); }
+            echo 0;
+        }
+    }
+
+    // 6.2) Mark amenity request as returned
+    function return_amenity_request($json) {
+        include "connection.php";
+        try {
+            $data = is_string($json) ? json_decode($json, true) : $json;
+            $request_id = intval($data['request_id'] ?? 0);
+            $admin_notes = trim($data['admin_notes'] ?? '');
+            if ($request_id <= 0) { if (ob_get_length()) { ob_clean(); } echo 0; return; }
+
+            $conn->beginTransaction();
+
+            $note_id = null;
+            if ($admin_notes !== '') {
+                $stmtN = $conn->prepare("INSERT INTO tbl_booking_charges_notes (booking_c_notes) VALUES (:notes)");
+                $stmtN->execute([':notes' => $admin_notes]);
+                $note_id = $conn->lastInsertId();
+            }
+
+            $stmt = $conn->prepare("UPDATE tbl_booking_charges SET booking_charge_status=4, booking_return_datetime=NOW()" . ($note_id ? ", booking_charges_notes_id=:nid" : "") . " WHERE booking_charges_id=:id");
             $params = [':id' => $request_id];
             if ($note_id) { $params[':nid'] = $note_id; }
             $stmt->execute($params);
@@ -2922,6 +2988,12 @@ switch ($method) {
         break;
     case 'reject_amenity_request':
         $admin->reject_amenity_request($json);
+        break;
+    case 'set_pending_amenity_request':
+        $admin->set_pending_amenity_request($json);
+        break;
+    case 'return_amenity_request':
+        $admin->return_amenity_request($json);
         break;
     case 'get_pending_amenity_count':
         $admin->get_pending_amenity_count();
