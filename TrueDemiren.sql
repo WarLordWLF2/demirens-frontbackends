@@ -167,7 +167,7 @@ CREATE TABLE `tbl_booking_charges` (
   `booking_charges_total` int(11) DEFAULT NULL,
   `booking_charge_status` int(11) NOT NULL DEFAULT 1,
   `booking_charge_datetime` datetime NOT NULL,
-  `booking_return_datetime` datetime NOT NULL
+  `booking_return_datetime` datetime DEFAULT NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 --
@@ -362,7 +362,8 @@ CREATE TABLE `tbl_charges_status` (
 INSERT INTO `tbl_charges_status` (`charges_status_id`, `charges_status_name`) VALUES
 (1, 'Pending'),
 (2, 'Delivered'),
-(3, 'Cancelled');
+(3, 'Cancelled'),
+(4, 'Return');
 
 -- --------------------------------------------------------
 
